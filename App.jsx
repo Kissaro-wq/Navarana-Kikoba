@@ -454,6 +454,15 @@ function App() {
     setTimeout(() => setToast(null), 2200);
   };
 
+  const startFresh = async () => {
+    if (!window.confirm("Delete ALL members, savings, loans and transactions and start with an empty group? This cannot be undone.")) return;
+    const fresh = buildDemoData();
+    const empty = { ...fresh, members: [], contributions: [], loans: [], expenses: [], ledger: [], txSeq: 1, loanSeq: 1 };
+    setData(empty);
+    await storage.set("kikoba-state-v2", JSON.stringify(empty)).catch(() => {});
+    showToast("Started with an empty group");
+  };
+
   const resetDemo = async () => {
     const fresh = buildDemoData();
     setData(fresh);
@@ -480,10 +489,13 @@ function App() {
       {!screen && tab === "members" && <MembersScreen data={data} derived={derived} goto={goto} />}
       {!screen && tab === "savings" && <SavingsScreen data={data} goto={goto} />}
       {!screen && tab === "loans" && <LoansScreen data={data} derived={derived} goto={goto} />}
-      {!screen && tab === "more" && <MoreScreen data={data} derived={derived} goto={goto} resetDemo={resetDemo} />}
+      {!screen && tab === "more" && <MoreScreen data={data} derived={derived} goto={goto} resetDemo={resetDemo} startFresh={startFresh} />}
 
       {screen?.name === "memberProfile" && (
-        <MemberProfileScreen data={data} derived={derived} memberId={screen.props.memberId} back={back} />
+        <MemberProfileScreen data={data} derived={derived} memberId={screen.props.memberId} back={back} goto={goto} />
+      )}
+      {screen?.name === "editMember" && (
+        <EditMemberScreen data={data} setData={setData} memberId={screen.props.memberId} back={back} showToast={showToast} />
       )}
       {screen?.name === "addMember" && (
         <AddMemberScreen data={data} setData={setData} back={back} showToast={showToast} />
@@ -750,7 +762,57 @@ function AddMemberScreen({ data, setData, back, showToast }) {
   );
 }
 
-function MemberProfileScreen({ data, derived, memberId, back }) {
+function EditMemberScreen({ data, setData, memberId, back, showToast }) {
+  const m = memberById(data, memberId);
+  const [name, setName] = useState(m ? m.name : "");
+  const [phone, setPhone] = useState(m ? m.phone : "");
+  const [joined, setJoined] = useState(m ? m.joined : todayISO());
+  const [status, setStatus] = useState(m ? m.status : "ACTIVE");
+  if (!m) return null;
+  const canSave = name.trim().length > 1 && phone.trim().length >= 9;
+
+  const save = () => {
+    setData((d) => ({
+      ...d,
+      members: d.members.map((x) =>
+        x.id === memberId ? { ...x, name: name.trim(), phone: phone.trim(), joined, status } : x
+      ),
+    }));
+    showToast("Member details updated");
+    back();
+  };
+
+  return (
+    <div>
+      <Header title="Edit Member" onBack={back} />
+      <div className="p-4">
+        <div className="text-[12px] font-semibold text-[#6B7A72] mb-3">{m.id}</div>
+        <Field label="Full name">
+          <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} />
+        </Field>
+        <Field label="Phone number">
+          <input value={phone} onChange={(e) => setPhone(e.target.value)} className={inputCls} />
+        </Field>
+        <Field label="Date joined">
+          <input type="date" value={joined} onChange={(e) => setJoined(e.target.value)} className={inputCls} />
+        </Field>
+        <Field label="Status">
+          <select value={status} onChange={(e) => setStatus(e.target.value)} className={inputCls}>
+            <option value="ACTIVE">ACTIVE</option>
+            <option value="SUSPENDED">SUSPENDED</option>
+            <option value="EXITED">EXITED</option>
+          </select>
+        </Field>
+        <div className="bg-[#FBF0DD] text-[#8A5A0F] text-[13px] font-semibold rounded-2xl p-3.5 mb-4">
+          Savings, loans and payments cannot be edited here. They come from recorded transactions.
+        </div>
+        <PrimaryButton disabled={!canSave} onClick={save}>Save changes</PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+function MemberProfileScreen({ data, derived, memberId, back, goto }) {
   const m = memberById(data, memberId);
   if (!m) return null;
   const loans = data.loans.filter((l) => l.memberId === memberId);
@@ -760,7 +822,11 @@ function MemberProfileScreen({ data, derived, memberId, back }) {
 
   return (
     <div>
-      <Header title={m.name} onBack={back} />
+      <Header title={m.name} onBack={back} right={
+        <button onClick={() => goto("editMember", { memberId: m.id })} className="px-4 h-9 rounded-full bg-[#1F6F5C] text-white text-[13px] font-bold">
+          Edit
+        </button>
+      } />
       <div className="p-4">
         <Card className="p-4 mb-4">
           <div className="flex items-center justify-between mb-3">
@@ -1326,7 +1392,7 @@ function RepayLoanScreen({ data, setData, back, showToast, preselect }) {
 /* ---------------------------------------------------------------
    MORE: Ledger, Expenses, Profit, Share-out, Settings
 ----------------------------------------------------------------*/
-function MoreScreen({ data, derived, goto, resetDemo }) {
+function MoreScreen({ data, derived, goto, resetDemo, startFresh }) {
   const items = [
     { icon: FileText, label: "Financial ledger", onClick: () => goto("ledger") },
     { icon: Receipt, label: "Expenses", onClick: () => goto("expenses") },
@@ -1349,6 +1415,9 @@ function MoreScreen({ data, derived, goto, resetDemo }) {
         ))}
         <button onClick={resetDemo} className="w-full text-center text-[13px] font-semibold text-[#A7A196] mt-6 py-2">
           Reset demo data
+        </button>
+        <button onClick={startFresh} className="w-full text-center text-[13px] font-semibold text-[#B23A2E] py-2">
+          Clear all demo data and start fresh
         </button>
       </div>
     </div>
@@ -1560,6 +1629,18 @@ function SettingsScreen({ data, setData, back, showToast }) {
     <div>
       <Header title="Group Settings" onBack={back} />
       <div className="p-4">
+        <Field label="Location">
+          <input value={form.location || ""} onChange={set("location")} className={inputCls} />
+        </Field>
+        <Field label="Group phone">
+          <input value={form.phone || ""} onChange={set("phone")} className={inputCls} />
+        </Field>
+        <Field label="Registration number">
+          <input value={form.regNo || ""} onChange={set("regNo")} className={inputCls} />
+        </Field>
+        <Field label="Cycle name (e.g. 2026 Cycle)">
+          <input value={form.cycleLabel || ""} onChange={set("cycleLabel")} className={inputCls} />
+        </Field>
         <Field label="Group name">
           <input value={form.name} onChange={set("name")} className={inputCls} />
         </Field>
