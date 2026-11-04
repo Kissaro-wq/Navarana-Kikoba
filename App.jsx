@@ -83,6 +83,14 @@ const Check = svgIcon(<><path d="M5 12l4 4 10-10" /></>);
 const TZS = (n) =>
   "TZS " + Math.round(n).toLocaleString("en-US");
 
+const PAY_MODES = ["Cash", "Mobile money", "Bank transfer"];
+
+function payLine(p) {
+  if (!p || !p.mode) return "Payment details not recorded";
+  if (p.mode === "Cash") return "Cash \u00b7 Received by " + (p.receivedBy || "-");
+  return p.mode + " \u00b7 Receipt No. " + (p.receiptNo || "-");
+}
+
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
 function addMonths(dateStr, n) {
@@ -159,7 +167,16 @@ function buildDemoData() {
       if (idx % 7 === 3 && mi === months.length - 1) {
         paid = 25000; status = "PARTIAL";
       }
+      const modeIdx = (idx + mi) % 3;
+      const payMode = modeIdx === 0 ? "Mobile money" : modeIdx === 1 ? "Cash" : "Bank transfer";
+      const mm = String(mi + 1).padStart(2, "0");
+      const pay = {
+        id: `P-${m.id}-${mi}`, date: `2026-${mm}-05`, amount: paid, mode: payMode,
+        receivedBy: payMode === "Cash" ? members[0].name : "",
+        receiptNo: payMode === "Cash" ? "" : (payMode === "Mobile money" ? "MM" : "BK") + "26" + mm + String(10000 + idx * 137 + mi * 11),
+      };
       contributions.push({
+        payments: [pay],
         id: `C-${m.id}-${mi}`,
         memberId: m.id,
         month,
@@ -176,6 +193,7 @@ function buildDemoData() {
       ledger.push({
         id: nextTx(), date: `2026-${String(mi + 1).padStart(2, "0")}-05`, memberId: m.id,
         type: "CONTRIBUTION", amount: paid, ref: `${month} contribution`, createdBy: "Treasurer",
+        mode: pay.mode, receivedBy: pay.receivedBy, receiptNo: pay.receiptNo,
       });
       ledger.push({
         id: nextTx(), date: `2026-${String(mi + 1).padStart(2, "0")}-05`, memberId: m.id,
@@ -426,13 +444,13 @@ function App() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await storage.get("kikoba-state-v2");
+        const res = await storage.get("kikoba-state-v3");
         if (res && res.value) {
           setData(JSON.parse(res.value));
         } else {
           const fresh = buildDemoData();
           setData(fresh);
-          await storage.set("kikoba-state-v2", JSON.stringify(fresh));
+          await storage.set("kikoba-state-v3", JSON.stringify(fresh));
         }
       } catch (e) {
         setData(buildDemoData());
@@ -444,7 +462,7 @@ function App() {
   useEffect(() => {
     if (!data) return;
     const t = setTimeout(() => {
-      storage.set("kikoba-state-v2", JSON.stringify(data)).catch(() => {});
+      storage.set("kikoba-state-v3", JSON.stringify(data)).catch(() => {});
     }, 300);
     return () => clearTimeout(t);
   }, [data]);
@@ -459,14 +477,14 @@ function App() {
     const fresh = buildDemoData();
     const empty = { ...fresh, members: [], contributions: [], loans: [], expenses: [], ledger: [], txSeq: 1, loanSeq: 1 };
     setData(empty);
-    await storage.set("kikoba-state-v2", JSON.stringify(empty)).catch(() => {});
+    await storage.set("kikoba-state-v3", JSON.stringify(empty)).catch(() => {});
     showToast("Started with an empty group");
   };
 
   const resetDemo = async () => {
     const fresh = buildDemoData();
     setData(fresh);
-    await storage.set("kikoba-state-v2", JSON.stringify(fresh)).catch(() => {});
+    await storage.set("kikoba-state-v3", JSON.stringify(fresh)).catch(() => {});
     showToast("Demo data reset");
   };
 
@@ -494,6 +512,9 @@ function App() {
       {screen?.name === "memberProfile" && (
         <MemberProfileScreen data={data} derived={derived} memberId={screen.props.memberId} back={back} goto={goto} />
       )}
+      {screen?.name === "contributionDetail" && (
+        <ContributionDetailScreen data={data} contributionId={screen.props.contributionId} back={back} goto={goto} />
+      )}
       {screen?.name === "editMember" && (
         <EditMemberScreen data={data} setData={setData} memberId={screen.props.memberId} back={back} showToast={showToast} />
       )}
@@ -501,7 +522,7 @@ function App() {
         <AddMemberScreen data={data} setData={setData} back={back} showToast={showToast} />
       )}
       {screen?.name === "recordContribution" && (
-        <RecordContributionScreen data={data} setData={setData} back={back} showToast={showToast} preselect={screen.props.memberId} />
+        <RecordContributionScreen data={data} setData={setData} back={back} showToast={showToast} preselect={screen.props.memberId} preselectMonth={screen.props.month} />
       )}
       {screen?.name === "newLoan" && (
         <NewLoanScreen data={data} derived={derived} setData={setData} back={back} showToast={showToast} preselect={screen.props.memberId} />
@@ -871,10 +892,13 @@ function MemberProfileScreen({ data, derived, memberId, back, goto }) {
         <SectionTitle>Contribution history</SectionTitle>
         <div className="space-y-2">
           {contributions.slice(-6).reverse().map((c) => (
-            <Card key={c.id} className="p-3.5 flex items-center justify-between">
+            <Card key={c.id} onClick={() => goto("contributionDetail", { contributionId: c.id })} className="p-3.5 flex items-center justify-between">
               <div>
                 <div className="font-bold text-[14px]">{c.month} {c.year}</div>
                 <div className="text-[12px] text-[#6B7A72] font-semibold">Paid {TZS(c.paid)} of {TZS(c.expected)}</div>
+                {c.payments && c.payments.length > 0 && (
+                  <div className="text-[11.5px] text-[#A7A196] font-semibold mt-0.5">{payLine(c.payments[c.payments.length - 1])}</div>
+                )}
               </div>
               <StatusPill status={c.status} />
             </Card>
@@ -922,12 +946,15 @@ function SavingsScreen({ data, goto }) {
         <SectionTitle>{currentMonth} 2026 status</SectionTitle>
         <div className="space-y-2">
           {rows.map(({ member, contribution }) => (
-            <Card key={member.id} onClick={() => goto("recordContribution", { memberId: member.id })} className="p-3.5 flex items-center justify-between">
+            <Card key={member.id} onClick={() => contribution ? goto("contributionDetail", { contributionId: contribution.id }) : goto("recordContribution", { memberId: member.id })} className="p-3.5 flex items-center justify-between">
               <div>
                 <div className="font-bold text-[14px]">{member.name}</div>
                 <div className="text-[12px] text-[#6B7A72] font-semibold">
                   {contribution ? `Paid ${TZS(contribution.paid)} of ${TZS(contribution.expected)}` : `Expected ${TZS(data.group.contributionAmount)}`}
                 </div>
+                {contribution && contribution.payments && contribution.payments.length > 0 && (
+                  <div className="text-[11.5px] text-[#A7A196] font-semibold mt-0.5">{payLine(contribution.payments[contribution.payments.length - 1])}</div>
+                )}
               </div>
               <StatusPill status={contribution?.status || "UNPAID"} />
             </Card>
@@ -938,12 +965,15 @@ function SavingsScreen({ data, goto }) {
   );
 }
 
-function RecordContributionScreen({ data, setData, back, showToast, preselect }) {
+function RecordContributionScreen({ data, setData, back, showToast, preselect, preselectMonth }) {
   const monthsList = ["January","February","March","April","May","June","July","August","September","October","November","December"];
   const currentMonth = "August";
   const [memberId, setMemberId] = useState(preselect || "");
   const [amount, setAmount] = useState(String(data.group.contributionAmount));
-  const [month, setMonth] = useState(currentMonth);
+  const [month, setMonth] = useState(preselectMonth || currentMonth);
+  const [mode, setMode] = useState("Cash");
+  const [receivedBy, setReceivedBy] = useState("");
+  const [receiptNo, setReceiptNo] = useState("");
   const [step, setStep] = useState("form"); // form | confirm | receipt
 
   const member = memberById(data, memberId);
@@ -955,18 +985,26 @@ function RecordContributionScreen({ data, setData, back, showToast, preselect })
   const status = newTotal >= expected ? "PAID" : newTotal > 0 ? "PARTIAL" : "UNPAID";
   const shares = Math.floor(amt / data.group.shareValue);
 
-  const canContinue = member && amt > 0;
+  const isCash = mode === "Cash";
+  const receiptTaken = !isCash && receiptNo.trim() !== "" && data.contributions.some((c) =>
+    (c.payments || []).some((x) => x.receiptNo && x.receiptNo.toLowerCase() === receiptNo.trim().toLowerCase())
+  );
+  const canContinue = member && amt > 0 && (isCash ? receivedBy !== "" : receiptNo.trim().length >= 3) && !receiptTaken;
 
   const confirm = () => {
+    const payment = {
+      id: "P-" + Date.now(), date: todayISO(), amount: amt, mode,
+      receivedBy: isCash ? receivedBy : "", receiptNo: isCash ? "" : receiptNo.trim(),
+    };
     setData((d) => {
       const contributions = [...d.contributions];
       const idx = contributions.findIndex((c) => c.memberId === member.id && c.month === month);
       if (idx >= 0) {
-        contributions[idx] = { ...contributions[idx], paid: newTotal, status, date: todayISO() };
+        contributions[idx] = { ...contributions[idx], paid: newTotal, status, date: todayISO(), payments: [...(contributions[idx].payments || []), payment] };
       } else {
         contributions.push({
           id: `C-${member.id}-${month}`, memberId: member.id, month, year: 2026,
-          expected, paid: newTotal, status, date: todayISO(),
+          expected, paid: newTotal, status, date: todayISO(), payments: [payment],
         });
       }
       const members = d.members.map((m) =>
@@ -976,6 +1014,7 @@ function RecordContributionScreen({ data, setData, back, showToast, preselect })
       const ledger = [...d.ledger, {
         id: "TXN-" + String(seq).padStart(5, "0"), date: todayISO(), memberId: member.id,
         type: "CONTRIBUTION", amount: amt, ref: `${month} contribution`, createdBy: "Treasurer",
+        mode, receivedBy: payment.receivedBy, receiptNo: payment.receiptNo,
       }];
       return { ...d, contributions, members, ledger, txSeq: seq + 1 };
     });
@@ -997,6 +1036,8 @@ function RecordContributionScreen({ data, setData, back, showToast, preselect })
             <div className="text-[30px] font-extrabold text-[#1F6F5C] mt-3">{TZS(amt)}</div>
             <div className="text-[13px] font-semibold text-[#6B7A72] mt-1">{month} 2026 · {shares} share{shares !== 1 ? "s" : ""}</div>
             <div className="h-px bg-[#E7E2D8] my-4" />
+            <Row label="Payment method" value={mode} />
+            {isCash ? <Row label="Received by" value={receivedBy} /> : <Row label="Receipt number" value={receiptNo.trim()} />}
             <Row label="Status" value={status} bold />
           </Card>
           <PrimaryButton onClick={back}>Done</PrimaryButton>
@@ -1015,6 +1056,8 @@ function RecordContributionScreen({ data, setData, back, showToast, preselect })
             <Row label="Month" value={`${month} 2026`} />
             <div className="h-px bg-[#E7E2D8] my-2" />
             <Row label="Amount" value={TZS(amt)} bold />
+            <Row label="Payment method" value={mode} />
+            {isCash ? <Row label="Received by" value={receivedBy} /> : <Row label="Receipt number" value={receiptNo.trim()} />}
             <Row label="Shares earned" value={`${shares} share${shares !== 1 ? "s" : ""}`} />
             <Row label="New status" value={status} bold />
           </Card>
@@ -1039,6 +1082,21 @@ function RecordContributionScreen({ data, setData, back, showToast, preselect })
         <Field label="Amount (TZS)">
           <input inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ""))} className={inputCls} />
         </Field>
+        <Field label="Payment method">
+          <select value={mode} onChange={(e) => setMode(e.target.value)} className={inputCls}>
+            {PAY_MODES.map((pm) => <option key={pm} value={pm}>{pm}</option>)}
+          </select>
+        </Field>
+        {isCash ? (
+          <Field label="Received by (who took the cash)">
+            <MemberPicker members={data.members} value={(data.members.find((x) => x.name === receivedBy) || {}).id || ""} onChange={(id) => setReceivedBy((memberById(data, id) || {}).name || "")} placeholder="Select recipient" />
+          </Field>
+        ) : (
+          <Field label="Receipt / transaction number">
+            <input value={receiptNo} onChange={(e) => setReceiptNo(e.target.value)} placeholder="e.g. MM2608123456" className={inputCls} />
+            {receiptTaken && <div className="text-[12px] font-semibold text-[#B23A2E] mt-1.5">This receipt number was already used.</div>}
+          </Field>
+        )}
         {member && (
           <Card className="p-4 mb-4 bg-[#F1EEE6] border-0">
             <Row label="Expected" value={TZS(expected)} />
@@ -1047,6 +1105,52 @@ function RecordContributionScreen({ data, setData, back, showToast, preselect })
           </Card>
         )}
         <PrimaryButton disabled={!canContinue} onClick={() => setStep("confirm")}>Continue</PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+function ContributionDetailScreen({ data, contributionId, back, goto }) {
+  const c = data.contributions.find((x) => x.id === contributionId);
+  if (!c) return null;
+  const m = memberById(data, c.memberId);
+  const payments = c.payments || [];
+  const balance = Math.max(c.expected - c.paid, 0);
+  return (
+    <div>
+      <Header title={c.month + " " + c.year} onBack={back} />
+      <div className="p-4">
+        <Card className="p-4 mb-4">
+          <div className="flex items-center justify-between mb-2">
+            <div className="font-extrabold text-[16px]">{m ? m.name : c.memberId}</div>
+            <StatusPill status={c.status} />
+          </div>
+          <Row label="Expected" value={TZS(c.expected)} />
+          <Row label="Paid" value={TZS(c.paid)} />
+          <Row label="Balance" value={TZS(balance)} bold />
+        </Card>
+
+        <SectionTitle>Payments received</SectionTitle>
+        <div className="space-y-2 mb-5">
+          {payments.length === 0 && <EmptyState text="No payment details recorded." />}
+          {payments.map((pm) => (
+            <Card key={pm.id} className="p-4">
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-extrabold text-[16px]">{TZS(pm.amount)}</span>
+                <Pill tone={pm.mode === "Cash" ? "warn" : "good"}>{pm.mode}</Pill>
+              </div>
+              <div className="text-[12px] text-[#6B7A72] font-semibold mb-2">{fmtDate(pm.date)}</div>
+              {pm.mode === "Cash"
+                ? <Row label="Received by" value={pm.receivedBy || "-"} />
+                : <Row label="Receipt number" value={pm.receiptNo || "-"} />}
+            </Card>
+          ))}
+        </div>
+        {balance > 0 && (
+          <PrimaryButton onClick={() => goto("recordContribution", { memberId: c.memberId, month: c.month })}>
+            <Plus size={18} /> Record another payment
+          </PrimaryButton>
+        )}
       </div>
     </div>
   );
@@ -1446,6 +1550,7 @@ function LedgerScreen({ data, back }) {
             <div className="flex-1 min-w-0">
               <div className="font-bold text-[13.5px] truncate">{r.type}{r.memberId ? ` · ${memberById(data, r.memberId)?.name || r.memberId}` : ""}</div>
               <div className="text-[11.5px] text-[#6B7A72] font-semibold">{fmtDate(r.date)} · {r.ref}</div>
+              {r.mode && <div className="text-[11.5px] text-[#A7A196] font-semibold">{payLine(r)}</div>}
             </div>
             <span className={`font-extrabold text-[14px] ${r.amount >= 0 ? "text-[#1F6F5C]" : "text-[#B23A2E]"}`}>
               {r.amount >= 0 ? "+" : "−"}{TZS(Math.abs(r.amount))}
